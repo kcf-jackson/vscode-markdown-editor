@@ -73,11 +73,20 @@ class MarkdownEditorProvider implements vscode.CustomEditorProvider<vscode.Custo
       return;
     }
 
-    // We need to get the TextDocument from the URI
-    const textDocument = await vscode.workspace.openTextDocument(document.uri);
-    
-    // Create a new editor panel using the existing webview panel
-    EditorPanelMap.createWithExistingPanel(this.context, textDocument, webviewPanel);
+    try {
+      // First, ensure the text document is open in the background
+      const textDocument = await vscode.workspace.openTextDocument(document.uri);
+      
+      // Create a new editor panel using the existing webview panel
+      await EditorPanelMap.createWithExistingPanel(this.context, textDocument, webviewPanel);
+    } catch (error) {
+      console.error("Failed to initialize markdown editor:", error);
+      vscode.window.showErrorMessage(`Failed to open markdown editor: ${error.message}`);
+      
+      // Fall back to default editor
+      webviewPanel.dispose();
+      await vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
+    }
   }
 
   async openCustomDocument(
@@ -158,6 +167,9 @@ class EditorPanelMap {
     if (existingPanel) {
       existingPanel.dispose();
     }
+    
+    // Configure the webview panel with our options
+    webviewPanel.webview.options = EditorPanel.getWebviewOptions(uri);
     
     const panel = new EditorPanel(
       context,
