@@ -1,10 +1,18 @@
 # Markdown Editor — A full-featured WYSIWYG editor for markdown
 
-[![badge_title](https://vsmarketplacebadges.dev/version-short/zaaack.markdown-editor.svg)](https://marketplace.visualstudio.com/items?itemName=zaaack.markdown-editor) [![](https://vsmarketplacebadges.dev/installs-short/zaaack.markdown-editor.svg)](https://marketplace.visualstudio.com/items?itemName=zaaack.markdown-editor) [![](https://vsmarketplacebadges.dev/rating-short/zaaack.markdown-editor.svg)](https://marketplace.visualstudio.com/items?itemName=zaaack.markdown-editor)
+This repo is a fork of [zaaack](https://github.com/zaaack/)'s VSCode extension [vscode-markdown-editor](https://github.com/zaaack/vscode-markdown-editor/). It made minimal edits to support multiple instances and using the editor as default for markdown files. The version of the vditor has been updated from v3.8.4 to v3.10.9 (thanks to edit by [yuanliuus](https://github.com/yuanliuus) made [here](https://github.com/zaaack/vscode-markdown-editor/pull/102)).
+
+![multiple-instances](screenshots/multiple-instances.png)
+*Multiple instances of markdown-editor*
+
+![markdown-editor-as-default](screenshots/editor-as-default.png)
+*Setting markdown-editor as default editor for md files.*
+
+---
 
 ## Demo
 
-![demo](./demo.gif)
+![demo](./screenshots/demo.gif)
 
 ## Features
 
