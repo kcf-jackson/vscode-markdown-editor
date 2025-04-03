@@ -8,6 +8,13 @@ This [editor](https://github.com/kcf-jackson/vscode-markdown-editor) is a fork o
 ![markdown-editor-as-default](screenshots/editor-as-default.png)
 *Setting markdown-editor as default editor for md files.*
 
+To install this extension, download the vsix file from the [release](https://github.com/kcf-jackson/vscode-markdown-editor/releases/tag/v0.1.13-custom.1) page and install it with the command:
+```
+code --install-extension markdown-editor-0.1.13-custom.1.vsix
+```
+
+
+
 ---
 
 ## Demo
