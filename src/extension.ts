@@ -36,11 +36,14 @@ export function activate(context: vscode.ExtensionContext) {
 /**
  * Custom Editor Provider for Markdown files
  */
-class MarkdownEditorProvider implements vscode.CustomEditorProvider {
+class MarkdownEditorProvider implements vscode.CustomEditorProvider<vscode.CustomDocument> {
+  private readonly _onDidChangeCustomDocument = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<vscode.CustomDocument>>();
+  public readonly onDidChangeCustomDocument = this._onDidChangeCustomDocument.event;
+
   constructor(private context: vscode.ExtensionContext) {}
 
   async resolveCustomEditor(
-    document: vscode.TextDocument,
+    document: vscode.CustomDocument,
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
@@ -55,8 +58,11 @@ class MarkdownEditorProvider implements vscode.CustomEditorProvider {
       return;
     }
 
+    // We need to get the TextDocument from the URI
+    const textDocument = await vscode.workspace.openTextDocument(document.uri);
+    
     // Create a new editor panel using the existing webview panel
-    EditorPanelMap.createWithExistingPanel(this.context, document, webviewPanel);
+    EditorPanelMap.createWithExistingPanel(this.context, textDocument, webviewPanel);
   }
 
   async openCustomDocument(
@@ -64,8 +70,32 @@ class MarkdownEditorProvider implements vscode.CustomEditorProvider {
     _openContext: vscode.CustomDocumentOpenContext,
     _token: vscode.CancellationToken
   ): Promise<vscode.CustomDocument> {
-    const document = await vscode.workspace.openTextDocument(uri);
     return { uri, dispose: () => {} };
+  }
+
+  // Implement required methods from the interface
+  saveCustomDocument(document: vscode.CustomDocument, cancellation: vscode.CancellationToken): Thenable<void> {
+    // Fix: Convert boolean to void
+    return vscode.workspace.saveAll(false).then(() => {});
+  }
+
+  saveCustomDocumentAs(document: vscode.CustomDocument, destination: vscode.Uri, cancellation: vscode.CancellationToken): Thenable<void> {
+    // Fix: The saveAs method only takes one parameter and returns Uri | undefined
+    // We need to use a different approach
+    return vscode.workspace.openTextDocument(document.uri).then(doc => {
+      return vscode.workspace.fs.writeFile(destination, Buffer.from(doc.getText())).then(() => {});
+    });
+  }
+
+  revertCustomDocument(document: vscode.CustomDocument, cancellation: vscode.CancellationToken): Thenable<void> {
+    return Promise.resolve();
+  }
+
+  backupCustomDocument(document: vscode.CustomDocument, context: vscode.CustomDocumentBackupContext, cancellation: vscode.CancellationToken): Thenable<vscode.CustomDocumentBackup> {
+    return Promise.resolve({
+      id: context.destination.toString(),
+      delete: () => {}
+    });
   }
 }
 
