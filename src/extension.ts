@@ -21,12 +21,27 @@ export function activate(context: vscode.ExtensionContext) {
     )
   )
 
-  // Register the custom editor provider
-  const provider = new MarkdownEditorProvider(context);
+  // Register the custom editor provider only if the setting is enabled
+  const config = vscode.workspace.getConfiguration('markdown-editor');
+  const useAsDefault = config.get<boolean>('useAsDefault', false);
+  
+  if (useAsDefault) {
+    const provider = new MarkdownEditorProvider(context);
+    context.subscriptions.push(
+      vscode.window.registerCustomEditorProvider('markdown-editor.editor', provider, {
+        webviewOptions: { retainContextWhenHidden: true },
+        supportsMultipleEditorsPerDocument: false
+      })
+    );
+  }
+  
+  // Listen for configuration changes to re-register the provider if needed
   context.subscriptions.push(
-    vscode.window.registerCustomEditorProvider('markdown-editor.editor', provider, {
-      webviewOptions: { retainContextWhenHidden: true },
-      supportsMultipleEditorsPerDocument: false
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('markdown-editor.useAsDefault')) {
+        // Reload window to apply the change
+        vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
     })
   );
 
