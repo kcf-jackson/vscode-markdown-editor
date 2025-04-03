@@ -24,7 +24,8 @@
   "activationEvents": [
     "onCommand:markdown-editor.openEditor",
     "onWebviewPanel:markdown-editor",
-    "onLanguage:markdown"
+    "onLanguage:markdown",
+    "onCustomEditor:markdown-editor.editor"
   ],
   "repository": {
     "type": "git",
@@ -32,6 +33,18 @@
   },
   "main": "out/extension.js",
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "markdown-editor.editor",
+        "displayName": "Markdown Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
     "commands": [
       {
         "command": "markdown-editor.openEditor",
@@ -71,6 +84,11 @@
         "markdown-editor.customCss": {
           "type": "string",
           "default": ""
+        },
+        "markdown-editor.useAsDefault": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use Markdown Editor as the default editor for markdown files."
         }
       }
     },

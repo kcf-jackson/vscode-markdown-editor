@@ -21,86 +21,204 @@ export function activate(context: vscode.ExtensionContext) {
     )
   )
 
+  // Register the custom editor provider
+  const provider = new MarkdownEditorProvider(context);
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider('markdown-editor.editor', provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+      supportsMultipleEditorsPerDocument: false
+    })
+  );
+
   context.globalState.setKeysForSync([KeyVditorOptions])
 }
 
 /**
- * Manages cat coding webview panels
+ * Custom Editor Provider for Markdown files
  */
-class EditorPanel {
+class MarkdownEditorProvider implements vscode.CustomEditorProvider {
+  constructor(private context: vscode.ExtensionContext) {}
+
+  async resolveCustomEditor(
+    document: vscode.TextDocument,
+    webviewPanel: vscode.WebviewPanel,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+    // Check if the feature is enabled in settings
+    const config = vscode.workspace.getConfiguration('markdown-editor');
+    const useAsDefault = config.get<boolean>('useAsDefault', false);
+    
+    if (!useAsDefault) {
+      // If not set as default, close this panel and open in regular editor
+      webviewPanel.dispose();
+      await vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
+      return;
+    }
+
+    // Create a new editor panel using the existing webview panel
+    EditorPanelMap.createWithExistingPanel(this.context, document, webviewPanel);
+  }
+
+  async openCustomDocument(
+    uri: vscode.Uri,
+    _openContext: vscode.CustomDocumentOpenContext,
+    _token: vscode.CancellationToken
+  ): Promise<vscode.CustomDocument> {
+    const document = await vscode.workspace.openTextDocument(uri);
+    return { uri, dispose: () => {} };
+  }
+}
+
+/**
+ * Manages markdown editor webview panels
+ */
+class EditorPanelMap {
   /**
-   * Track the currently panel. Only allow a single panel to exist at a time.
+   * Track all active panels by URI
    */
-  public static currentPanel: EditorPanel | undefined
+  private static panels = new Map<string, EditorPanel>();
 
-  public static readonly viewType = 'markdown-editor'
+  /**
+   * Get a panel by URI
+   */
+  public static get(uri: vscode.Uri): EditorPanel | undefined {
+    return this.panels.get(uri.toString());
+  }
 
-  private _disposables: vscode.Disposable[] = []
+  /**
+   * Register a panel
+   */
+  public static register(uri: vscode.Uri, panel: EditorPanel): void {
+    this.panels.set(uri.toString(), panel);
+  }
 
+  /**
+   * Unregister a panel
+   */
+  public static unregister(uri: vscode.Uri): void {
+    this.panels.delete(uri.toString());
+  }
+
+  /**
+   * Create a new panel with an existing webview panel (for custom editor)
+   */
+  public static async createWithExistingPanel(
+    context: vscode.ExtensionContext,
+    document: vscode.TextDocument,
+    webviewPanel: vscode.WebviewPanel
+  ): Promise<EditorPanel> {
+    const uri = document.uri;
+    const existingPanel = this.get(uri);
+    
+    if (existingPanel) {
+      existingPanel.dispose();
+    }
+    
+    const panel = new EditorPanel(
+      context,
+      webviewPanel,
+      context.extensionUri,
+      document,
+      uri
+    );
+    
+    this.register(uri, panel);
+    return panel;
+  }
+
+  /**
+   * Create a new panel or show an existing one
+   */
   public static async createOrShow(
     context: vscode.ExtensionContext,
     uri?: vscode.Uri
-  ) {
-    const { extensionUri } = context
+  ): Promise<EditorPanel | undefined> {
+    const { extensionUri } = context;
     const column = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
-      : undefined
-    if (EditorPanel.currentPanel && uri !== EditorPanel.currentPanel?._uri) {
-      EditorPanel.currentPanel.dispose()
+      : undefined;
+    
+    // If we have a URI and an existing panel for it, show it
+    if (uri) {
+      const existingPanel = this.get(uri);
+      if (existingPanel) {
+        existingPanel._panel.reveal(column);
+        return existingPanel;
+      }
     }
-    // If we already have a panel, show it.
-    if (EditorPanel.currentPanel) {
-      EditorPanel.currentPanel._panel.reveal(column)
-      return
-    }
+
     if (!vscode.window.activeTextEditor && !uri) {
-      showError(`Did not open markdown file!`)
-      return
+      showError(`Did not open markdown file!`);
+      return;
     }
-    let doc: undefined | vscode.TextDocument
+    
+    let doc: undefined | vscode.TextDocument;
+    
     // from context menu : 从当前打开的 textEditor 中寻找 是否有当前 markdown 的 editor, 有的话则绑定 document
     if (uri) {
       // 从右键打开文件，先打开文档然后开启自动同步，不然没法保存文件和同步到已经打开的document
-      doc = await vscode.workspace.openTextDocument(uri)
+      doc = await vscode.workspace.openTextDocument(uri);
     } else {
-      doc = vscode.window.activeTextEditor?.document
+      doc = vscode.window.activeTextEditor?.document;
       // from command mode
       if (doc && doc.languageId !== 'markdown') {
         showError(
           `Current file language is not markdown, got ${doc.languageId}`
-        )
-        return
+        );
+        return;
       }
     }
 
     if (!doc) {
-      showError(`Cannot find markdown file!`)
-      return
+      showError(`Cannot find markdown file!`);
+      return;
     }
 
-    // Otherwise, create a new panel.
+    // Create a new panel
     const panel = vscode.window.createWebviewPanel(
       EditorPanel.viewType,
       'markdown-editor',
       column || vscode.ViewColumn.One,
       EditorPanel.getWebviewOptions(uri)
-    )
+    );
 
-    EditorPanel.currentPanel = new EditorPanel(
+    const editorPanel = new EditorPanel(
       context,
       panel,
       extensionUri,
       doc,
       uri
-    )
+    );
+    
+    this.register(doc.uri, editorPanel);
+    return editorPanel;
+  }
+}
+
+/**
+ * Individual editor panel instance
+ */
+class EditorPanel {
+  /**
+   * Track the currently panel. Only allow a single panel to exist at a time.
+   */
+  public static readonly viewType = 'markdown-editor';
+
+  private _disposables: vscode.Disposable[] = [];
+
+  public static async createOrShow(
+    context: vscode.ExtensionContext,
+    uri?: vscode.Uri
+  ) {
+    return EditorPanelMap.createOrShow(context, uri);
   }
 
   private static getFolders(): vscode.Uri[] {
-    const data = []
+    const data = [];
     for (let i = 65; i <= 90; i++) {
-      data.push(vscode.Uri.file(`${String.fromCharCode(i)}:/`))
+      data.push(vscode.Uri.file(`${String.fromCharCode(i)}:/`));
     }
-    return data
+    return data;
   }
 
   static getWebviewOptions(
@@ -109,78 +227,82 @@ class EditorPanel {
     return {
       // Enable javascript in the webview
       enableScripts: true,
-
-            localResourceRoots: [vscode.Uri.file("/"), ...this.getFolders()],
+      localResourceRoots: [vscode.Uri.file("/"), ...this.getFolders()],
       retainContextWhenHidden: true,
       enableCommandUris: true,
-    }
+    };
   }
+  
   private get _fsPath() {
-    return this._uri.fsPath
+    return this._uri.fsPath;
   }
 
   static get config() {
-    return vscode.workspace.getConfiguration('markdown-editor')
+    return vscode.workspace.getConfiguration('markdown-editor');
   }
 
-  private constructor(
+  constructor(
     private readonly _context: vscode.ExtensionContext,
-    private readonly _panel: vscode.WebviewPanel,
+    public readonly _panel: vscode.WebviewPanel,
     private readonly _extensionUri: vscode.Uri,
     public _document: vscode.TextDocument, // 当前有 markdown 编辑器
     public _uri = _document.uri // 从资源管理器打开，只有 uri 没有 _document
   ) {
     // Set the webview's initial html content
-
-    this._init()
+    this._init();
 
     // Listen for when the panel is disposed
     // This happens when the user closes the panel or when the panel is closed programmatically
-    this._panel.onDidDispose(() => this.dispose(), null, this._disposables)
-    let textEditTimer: NodeJS.Timeout | void
+    this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+    
+    let textEditTimer: NodeJS.Timeout | void;
+    
     // close EditorPanel when vsc editor is close
     vscode.workspace.onDidCloseTextDocument((e) => {
       if (e.fileName === this._fsPath) {
-        this.dispose()
+        this.dispose();
       }
-    }, this._disposables)
+    }, this._disposables);
+    
     // update EditorPanel when vsc editor changes
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.fileName !== this._document.fileName) {
-        return
+        return;
       }
       // 当 webview panel 激活时不将由 webview编辑导致的 vsc 编辑器更新同步回 webview
       // don't change webview panel when webview panel is focus
       if (this._panel.active) {
-        return
+        return;
       }
-      textEditTimer && clearTimeout(textEditTimer)
+      textEditTimer && clearTimeout(textEditTimer);
       textEditTimer = setTimeout(() => {
-        this._update()
-        this._updateEditTitle()
-      }, 300)
-    }, this._disposables)
+        this._update();
+        this._updateEditTitle();
+      }, 300);
+    }, this._disposables);
+    
     // Handle messages from the webview
     this._panel.webview.onDidReceiveMessage(
       async (message) => {
-        debug('msg from webview review', message, this._panel.active)
+        debug('msg from webview review', message, this._panel.active);
 
         const syncToEditor = async () => {
-          debug('sync to editor', this._document, this._uri)
+          debug('sync to editor', this._document, this._uri);
           if (this._document) {
-            const edit = new vscode.WorkspaceEdit()
+            const edit = new vscode.WorkspaceEdit();
             edit.replace(
               this._document.uri,
               new vscode.Range(0, 0, this._document.lineCount, 0),
               message.content
-            )
-            await vscode.workspace.applyEdit(edit)
+            );
+            await vscode.workspace.applyEdit(edit);
           } else if (this._uri) {
-            await vscode.workspace.fs.writeFile(this._uri, message.content)
+            await vscode.workspace.fs.writeFile(this._uri, message.content);
           } else {
-            showError(`Cannot find original file to save!`)
+            showError(`Cannot find original file to save!`);
           }
-        }
+        };
+        
         switch (message.command) {
           case 'ready':
             this._update({
@@ -196,79 +318,79 @@ class EditorPanel {
                 vscode.ColorThemeKind.Dark
                   ? 'dark'
                   : 'light',
-            })
-            break
+            });
+            break;
           case 'save-options':
-            this._context.globalState.update(KeyVditorOptions, message.options)
-            break
+            this._context.globalState.update(KeyVditorOptions, message.options);
+            break;
           case 'info':
-            vscode.window.showInformationMessage(message.content)
-            break
+            vscode.window.showInformationMessage(message.content);
+            break;
           case 'error':
-            showError(message.content)
-            break
+            showError(message.content);
+            break;
           case 'edit': {
             // 只有当 webview 处于编辑状态时才同步到 vsc 编辑器，避免重复刷新
             if (this._panel.active) {
-              await syncToEditor()
-              this._updateEditTitle()
+              await syncToEditor();
+              this._updateEditTitle();
             }
-            break
+            break;
           }
           case 'reset-config': {
-            await this._context.globalState.update(KeyVditorOptions, {})
-            break
+            await this._context.globalState.update(KeyVditorOptions, {});
+            break;
           }
           case 'save': {
-            await syncToEditor()
-            await this._document.save()
-            this._updateEditTitle()
-            break
+            await syncToEditor();
+            await this._document.save();
+            this._updateEditTitle();
+            break;
           }
           case 'upload': {
-            const assetsFolder = EditorPanel.getAssetsFolder(this._uri)
+            const assetsFolder = EditorPanel.getAssetsFolder(this._uri);
             try {
               await vscode.workspace.fs.createDirectory(
                 vscode.Uri.file(assetsFolder)
-              )
+              );
             } catch (error) {
-              console.error(error)
-              showError(`Invalid image folder: ${assetsFolder}`)
+              console.error(error);
+              showError(`Invalid image folder: ${assetsFolder}`);
             }
             await Promise.all(
               message.files.map(async (f: any) => {
-                const content = Buffer.from(f.base64, 'base64')
+                const content = Buffer.from(f.base64, 'base64');
                 return vscode.workspace.fs.writeFile(
                   vscode.Uri.file(NodePath.join(assetsFolder, f.name)),
                   content
-                )
+                );
               })
-            )
+            );
             const files = message.files.map((f: any) =>
               NodePath.relative(
                 NodePath.dirname(this._fsPath),
                 NodePath.join(assetsFolder, f.name)
               ).replace(/\\/g, '/')
-            )
+            );
             this._panel.webview.postMessage({
               command: 'uploaded',
               files,
-            })
-            break
+            });
+            break;
           }
           case 'open-link': {
-            let url = message.href
+            let url = message.href;
             if (!/^http/.test(url)) {
-              url = NodePath.resolve(this._fsPath, '..', url)
+              url = NodePath.resolve(this._fsPath, '..', url);
             }
-            vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(url))
-            break
+            vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(url));
+            break;
           }
         }
       },
       null,
       this._disposables
-    )
+    );
   }
 
   static getAssetsFolder(uri: vscode.Uri) {
@@ -284,77 +406,76 @@ class EditorPanel {
         '${fileBasenameNoExtension}',
         NodePath.basename(uri.fsPath, NodePath.extname(uri.fsPath))
       )
-      .replace('${dir}', NodePath.dirname(uri.fsPath))
+      .replace('${dir}', NodePath.dirname(uri.fsPath));
     const assetsFolder = NodePath.resolve(
       NodePath.dirname(uri.fsPath),
       imageSaveFolder
-    )
-    return assetsFolder
+    );
+    return assetsFolder;
   }
 
   public dispose() {
-    EditorPanel.currentPanel = undefined
+    // Unregister from the map
+    EditorPanelMap.unregister(this._uri);
 
     // Clean up our resources
-    this._panel.dispose()
+    this._panel.dispose();
 
     while (this._disposables.length) {
-      const x = this._disposables.pop()
+      const x = this._disposables.pop();
       if (x) {
-        x.dispose()
+        x.dispose();
       }
     }
   }
 
   private _init() {
-    const webview = this._panel.webview
+    const webview = this._panel.webview;
 
-    this._panel.webview.html = this._getHtmlForWebview(webview)
-    this._panel.title = NodePath.basename(this._fsPath)
+    this._panel.webview.html = this._getHtmlForWebview(webview);
+    this._panel.title = NodePath.basename(this._fsPath);
   }
-  private _isEdit = false
+  
+  private _isEdit = false;
+  
   private _updateEditTitle() {
-    const isEdit = this._document.isDirty
+    const isEdit = this._document.isDirty;
     if (isEdit !== this._isEdit) {
-      this._isEdit = isEdit
+      this._isEdit = isEdit;
       this._panel.title = `${isEdit ? `[edit]` : ''}${NodePath.basename(
         this._fsPath
-      )}`
+      )}`;
     }
   }
 
-  // private fileToWebviewUri = (f: string) => {
-  //   return this._panel.webview.asWebviewUri(vscode.Uri.file(f)).toString()
-  // }
-
   private async _update(
     props: {
-      type?: 'init' | 'update'
-      options?: any
-      theme?: 'dark' | 'light'
+      type?: 'init' | 'update';
+      options?: any;
+      theme?: 'dark' | 'light';
     } = { options: void 0 }
   ) {
     const md = this._document
       ? this._document.getText()
-      : (await vscode.workspace.fs.readFile(this._uri)).toString()
-    // const dir = NodePath.dirname(this._document.fileName)
+      : (await vscode.workspace.fs.readFile(this._uri)).toString();
+    // const dir = NodePath.dirname(this._document.fileName);
     this._panel.webview.postMessage({
       command: 'update',
       content: md,
       ...props,
-    })
+    });
   }
 
   private _getHtmlForWebview(webview: vscode.Webview) {
     const toUri = (f: string) =>
-      webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, f))
+      webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, f));
     const baseHref =
       NodePath.dirname(
         webview.asWebviewUri(vscode.Uri.file(this._fsPath)).toString()
-      ) + '/'
-    const toMediaPath = (f: string) => `media/dist/${f}`
-    const JsFiles = ['main.js'].map(toMediaPath).map(toUri)
-    const CssFiles = ['main.css'].map(toMediaPath).map(toUri)
+      ) + '/';
+    const toMediaPath = (f: string) => `media/dist/${f}`;
+    const JsFiles = ['main.js'].map(toMediaPath).map(toUri);
+    const CssFiles = ['main.css'].map(toMediaPath).map(toUri);
 
     return (
       `<!DOCTYPE html>
@@ -380,6 +501,6 @@ class EditorPanel {
 				${JsFiles.map((f) => `<script src="${f}"></script>`).join('\n')}
 			</body>
 			</html>`
-    )
+    );
   }
 }
