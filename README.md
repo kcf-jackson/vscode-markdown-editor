@@ -1,6 +1,6 @@
 # Markdown Editor — A full-featured WYSIWYG editor for markdown
 
-This repo is a fork of [zaaack](https://github.com/zaaack/)'s VSCode extension [vscode-markdown-editor](https://github.com/zaaack/vscode-markdown-editor/). It made minimal edits to support multiple instances and using the editor as default for markdown files. The version of the vditor has been updated from v3.8.4 to v3.10.9 (thanks to edit by [yuanliuus](https://github.com/yuanliuus) made [here](https://github.com/zaaack/vscode-markdown-editor/pull/102)).
+This [editor](https://github.com/kcf-jackson/vscode-markdown-editor) is a fork of [zaaack](https://github.com/zaaack/)'s VSCode extension [vscode-markdown-editor](https://github.com/zaaack/vscode-markdown-editor/). It introduces minimal changes to support multiple editor instances and the option to set the editor as default for Markdown files. The version of [vditor](https://github.com/Vanessa219/vditor) has been updated from v3.8.4 to v3.10.9 (thanks to edits by [yuanliuus](https://github.com/yuanliuus) made [here](https://github.com/zaaack/vscode-markdown-editor/pull/102)).
 
 ![multiple-instances](screenshots/multiple-instances.png)
 *Multiple instances of markdown-editor*
@@ -12,7 +12,7 @@ This repo is a fork of [zaaack](https://github.com/zaaack/)'s VSCode extension [
 
 ## Demo
 
-![demo](./screenshots/demo.gif)
+![demo](screenshots/demo.gif)
 
 ## Features
 
@@ -73,9 +73,6 @@ Edit your settings.json and add
 - [vscode](https://github.com/microsoft/vscode)
 - [vditor](https://github.com/Vanessa219/vditor)
 
-## Todo
-
-- [ ] Using [Custom Text Editor](https://code.visualstudio.com/api/extension-guides/custom-editors#custom-text-editor) ([demo](https://github.com/gera2ld/markmap-vscode))
 
 ## License
 
