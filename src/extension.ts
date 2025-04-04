@@ -79,7 +79,8 @@ class MarkdownEditorProvider implements vscode.CustomEditorProvider<vscode.Custo
       });
     } catch (error) {
       console.error(`Error resolving custom editor: ${error}`);
-      vscode.window.showErrorMessage(`Failed to open markdown editor: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Failed to open markdown editor: ${errorMessage}`);
       
       // Fall back to default editor
       webviewPanel.dispose();
@@ -97,8 +98,11 @@ class MarkdownEditorProvider implements vscode.CustomEditorProvider<vscode.Custo
 
   // Implement required methods from the interface
   saveCustomDocument(document: vscode.CustomDocument, cancellation: vscode.CancellationToken): Thenable<void> {
-    // Fix: Convert boolean to void
-    return vscode.workspace.saveAll(false).then(() => {});
+    const panel = EditorPanelMap.get(document.uri);
+    if (panel && panel._document) {
+      return panel._document.save().then(() => {});
+    }
+    return Promise.resolve();
   }
 
   saveCustomDocumentAs(document: vscode.CustomDocument, destination: vscode.Uri, cancellation: vscode.CancellationToken): Thenable<void> {
@@ -276,7 +280,9 @@ class EditorPanel {
    * Track the currently panel. Only allow a single panel to exist at a time.
    */
   public static readonly viewType = 'markdown-editor';
-
+  // Add these properties at the top of the class
+  private _textEditTimer: NodeJS.Timeout | null = null;
+  private _disposalTimeout: NodeJS.Timeout | null = null;
   private _disposables: vscode.Disposable[] = [];
 
   public static async createOrShow(
@@ -314,49 +320,43 @@ class EditorPanel {
     return vscode.workspace.getConfiguration('markdown-editor');
   }
 
-  private _keepAliveInterval: NodeJS.Timeout | null = null;
-
-  constructor(
-    private readonly _context: vscode.ExtensionContext,
-    public readonly _panel: vscode.WebviewPanel,
-    private readonly _extensionUri: vscode.Uri,
-    public _document: vscode.TextDocument, // 当前有 markdown 编辑器
-    public _uri = _document.uri // 从资源管理器打开，只有 uri 没有 _document
-  ) {
-    // Set the webview's initial html content
-    console.log(`Creating EditorPanel for ${this._uri.toString()}`);
-
-    this._init();
-
-    // Listen for when the panel is disposed
-    // This happens when the user closes the panel or when the panel is closed programmatically
-    // Track document reopening explicitly
-    let closedDocumentPaths = new Set<string>();
-
-    // Track document reopening with a timeout mechanism
+  // Replace the existing document close event handlers with this single implementation
+  private setupDocumentCloseHandler() {
     let disposalTimeout: NodeJS.Timeout | null = null;
-
+    
     vscode.workspace.onDidCloseTextDocument((e) => {
       console.log(`Document closed: ${e.fileName}, comparing with ${this._fsPath}`);
+      console.log(`Close stack trace: ${new Error().stack}`);
+      
       if (e.fileName === this._fsPath) {
         this._documentCloseTriggered = true;
         
-        // Try to reopen the document immediately
-        vscode.workspace.openTextDocument(this._uri).then(doc => {
-          console.log(`Reopened document: ${doc.fileName}`);
-          // Keep the document in the background
-          return vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
-        }).then(() => {
-          console.log(`Document shown in editor`);
-        }, (error: Error) => {
-          console.error(`Failed to reopen document: ${error.message}`);
-          // If we can't reopen, allow disposal
-          this._keepAlive = false;
-          this.dispose();
-        });
+        // Clear any existing timeout
+        if (disposalTimeout) {
+          clearTimeout(disposalTimeout);
+        }
+        
+        // Set a timeout to delay disposal
+        const timeoutSeconds = EditorPanel.config.get<number>('disposalTimeoutSeconds', 10);
+        disposalTimeout = setTimeout(() => {
+          // Check if the document has been reopened
+          const isDocumentOpen = vscode.workspace.textDocuments.some(
+            doc => doc.fileName === this._fsPath
+          );
+          
+          // Check if the panel is still visible
+          const isPanelVisible = this._panel.visible;
+          
+          if (!isDocumentOpen && !isPanelVisible) {
+            console.log(`Executing delayed disposal for ${this._fsPath} - document was not reopened after 10s`);
+            this.dispose();
+          } else {
+            console.log(`Cancelling disposal for ${this._fsPath} - document was reopened or panel is visible`);
+          }
+        }, timeoutSeconds * 1000); // 10 second delay
       }
-    }, this._disposables);    
-
+    }, this._disposables);
+    
     // Cancel the disposal if the document is reopened
     vscode.workspace.onDidOpenTextDocument((e) => {
       console.log(`Document opened: ${e.fileName}`);
@@ -367,66 +367,109 @@ class EditorPanel {
       }
     }, this._disposables);
     
-    let textEditTimer: NodeJS.Timeout | void;
-    
-    // Track when files are saved
-    vscode.workspace.onDidSaveTextDocument((e) => {
-      console.log(`Document saved: ${e.fileName}`);
-    }, this._disposables);
+    // Also clear on panel disposal
+    this._panel.onDidDispose(() => {
+      if (disposalTimeout) {
+        clearTimeout(disposalTimeout);
+        disposalTimeout = null;
+      }
+    }, null, this._disposables);
+  }
 
-    // Track when editors are opened/closed
-    vscode.window.onDidChangeVisibleTextEditors((editors) => {
-      console.log(`Visible editors changed. Current count: ${editors.length}`);
-      editors.forEach(editor => {
-        console.log(`  - Editor: ${editor.document.fileName}`);
-      });
-    }, this._disposables);
+  // Add this flag to the EditorPanel class
+  private _documentEditPending = false;
 
-    // Track active editor changes
-    vscode.window.onDidChangeActiveTextEditor((editor) => {
-      console.log(`Active editor changed: ${editor?.document.fileName || 'none'}`);
-    }, this._disposables);
-
-    // Track when the webview becomes active/inactive
-    this._panel.onDidChangeViewState((e) => {
-      console.log(`Panel view state changed for ${this._uri.toString()}: active=${e.webviewPanel.active}, visible=${e.webviewPanel.visible}`);
-      
-      // Log the current state of all documents
-      console.log(`Current open documents:`);
-      vscode.workspace.textDocuments.forEach(doc => {
-        console.log(`  - ${doc.fileName} (isDirty=${doc.isDirty}, isClosed=${doc.isClosed})`);
-      });
-    }, this._disposables);
-
-    // Track document state changes
+  // Replace the existing document change handler
+  private setupDocumentChangeHandler() {
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.fileName === this._fsPath) {
         console.log(`Document changed: ${e.document.fileName}, isDirty=${e.document.isDirty}`);
       }
+      
+      // Skip if this change was triggered by our own edit
+      if (this._documentEditPending) {
+        return;
+      }
+      
+      // Skip if webview panel is active (user is editing in the webview)
+      if (this._panel.active) {
+        return;
+      }
+      
+      // Debounce updates
+      if (this._textEditTimer) {
+        clearTimeout(this._textEditTimer);
+      }
+      
+      this._textEditTimer = setTimeout(() => {
+        this._update();
+        this._updateEditTitle();
+      }, 300);
     }, this._disposables);
+  }
+
+  // Update the message handler for edit messages
+  private async handleEditMessage(content: string) {
+    if (!this._panel.active) {
+      return; // Only sync when webview is active
+    }
+    
+    try {
+      this._documentEditPending = true;
+      
+      if (this._document) {
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(
+          this._document.uri,
+          new vscode.Range(0, 0, this._document.lineCount, 0),
+          content
+        );
+        await vscode.workspace.applyEdit(edit);
+      } else if (this._uri) {
+        await vscode.workspace.fs.writeFile(this._uri, Buffer.from(content));
+      } else {
+        showError(`Cannot find original file to save!`);
+      }
+      
+      this._updateEditTitle();
+    } finally {
+      this._documentEditPending = false;
+    }
+  }
+
+  private async syncToEditor() {
+    if (this._document) {
+      const content = await this._panel.webview.postMessage({ command: 'getContent' });
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(
+        this._document.uri,
+        new vscode.Range(0, 0, this._document.lineCount, 0),
+        String(content || '')
+      );
+      await vscode.workspace.applyEdit(edit);
+    }
+  }
+  constructor(
+    private readonly _context: vscode.ExtensionContext,
+    public readonly _panel: vscode.WebviewPanel,
+    private readonly _extensionUri: vscode.Uri,
+    public _document: vscode.TextDocument,
+    public _uri = _document.uri
+  ) {
+    // Set the webview's initial html content
+    console.log(`Creating EditorPanel for ${this._uri.toString()}`);
+
+    this._init();
+    
+    // Set up our improved handlers
+    this.setupDocumentCloseHandler();
+    this.setupDocumentChangeHandler();
     
     // Handle messages from the webview
     this._panel.webview.onDidReceiveMessage(
       async (message) => {
         debug('msg from webview review', message, this._panel.active);
 
-        const syncToEditor = async () => {
-          debug('sync to editor', this._document, this._uri);
-          if (this._document) {
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(
-              this._document.uri,
-              new vscode.Range(0, 0, this._document.lineCount, 0),
-              message.content
-            );
-            await vscode.workspace.applyEdit(edit);
-          } else if (this._uri) {
-            await vscode.workspace.fs.writeFile(this._uri, message.content);
-          } else {
-            showError(`Cannot find original file to save!`);
-          }
-        };
-        
         switch (message.command) {
           case 'ready':
             this._update({
@@ -453,20 +496,15 @@ class EditorPanel {
           case 'error':
             showError(message.content);
             break;
-          case 'edit': {
-            // 只有当 webview 处于编辑状态时才同步到 vsc 编辑器，避免重复刷新
-            if (this._panel.active) {
-              await syncToEditor();
-              this._updateEditTitle();
-            }
+          case 'edit':
+            await this.handleEditMessage(message.content);
             break;
-          }
           case 'reset-config': {
             await this._context.globalState.update(KeyVditorOptions, {});
             break;
           }
           case 'save': {
-            await syncToEditor();
+            await this.syncToEditor();
             await this._document.save();
             this._updateEditTitle();
             break;
@@ -518,11 +556,9 @@ class EditorPanel {
 
     // Clean up the timeout when the panel is disposed for other reasons
     this._panel.onDidDispose(() => {
-      closedDocumentPaths.delete(this._fsPath);
-
-      if (disposalTimeout) {
-        clearTimeout(disposalTimeout);
-        disposalTimeout = null;
+      if (this._disposalTimeout) {
+        clearTimeout(this._disposalTimeout);
+        this._disposalTimeout = null;
       }
       // Existing disposal code...
     }, null, this._disposables);
