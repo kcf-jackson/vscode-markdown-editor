@@ -151,6 +151,14 @@ class EditorPanelMap {
     this.panels.delete(uri.toString());
   }
 
+  // In EditorPanelMap
+  private static openDocuments = new Map<string, vscode.TextDocument>();
+
+  public static trackDocument(uri: string, document: vscode.TextDocument) {
+    this.openDocuments.set(uri, document);
+  }
+
+
   /**
    * Create a new panel with an existing webview panel (for custom editor)
    */
@@ -248,6 +256,16 @@ class EditorPanelMap {
     this.register(doc.uri, editorPanel);
     return editorPanel;
   }
+
+  // In the EditorPanelMap class
+  public static keepDocumentsAlive() {
+    // Iterate through all panels and ensure their documents are open
+    for (const [uri, panel] of this.panels.entries()) {
+      vscode.workspace.openTextDocument(vscode.Uri.parse(uri)).then(doc => {
+        panel._document = doc; // Update the panel's document reference
+      });
+    }
+  }
 }
 
 /**
@@ -296,6 +314,8 @@ class EditorPanel {
     return vscode.workspace.getConfiguration('markdown-editor');
   }
 
+  private _keepAliveInterval: NodeJS.Timeout | null = null;
+
   constructor(
     private readonly _context: vscode.ExtensionContext,
     public readonly _panel: vscode.WebviewPanel,
@@ -316,33 +336,26 @@ class EditorPanel {
     // Track document reopening with a timeout mechanism
     let disposalTimeout: NodeJS.Timeout | null = null;
 
-    // When document closes, track it but don't dispose immediately
     vscode.workspace.onDidCloseTextDocument((e) => {
       console.log(`Document closed: ${e.fileName}, comparing with ${this._fsPath}`);
       if (e.fileName === this._fsPath) {
-        console.log(`Scheduling disposal for panel for ${this._fsPath} due to document close`);
+        this._documentCloseTriggered = true;
         
-        // Clear any existing timeout
-        if (disposalTimeout) {
-          clearTimeout(disposalTimeout);
-        }
-        
-        // Set a timeout to delay disposal
-        disposalTimeout = setTimeout(() => {
-          // Check if the document has been reopened
-          const isDocumentOpen = vscode.workspace.textDocuments.some(
-            doc => doc.fileName === this._fsPath
-          );
-          
-          if (!isDocumentOpen) {
-            console.log(`Executing delayed disposal for ${this._fsPath} - document was not reopened`);
-            this.dispose();
-          } else {
-            console.log(`Cancelling disposal for ${this._fsPath} - document was reopened`);
-          }
-        }, 1000); // 1 second delay
+        // Try to reopen the document immediately
+        vscode.workspace.openTextDocument(this._uri).then(doc => {
+          console.log(`Reopened document: ${doc.fileName}`);
+          // Keep the document in the background
+          return vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+        }).then(() => {
+          console.log(`Document shown in editor`);
+        }, (error: Error) => {
+          console.error(`Failed to reopen document: ${error.message}`);
+          // If we can't reopen, allow disposal
+          this._keepAlive = false;
+          this.dispose();
+        });
       }
-    }, this._disposables);
+    }, this._disposables);    
 
     // Cancel the disposal if the document is reopened
     vscode.workspace.onDidOpenTextDocument((e) => {
@@ -353,39 +366,43 @@ class EditorPanel {
         disposalTimeout = null;
       }
     }, this._disposables);
-
-    // Also clear on panel disposal
-    this._panel.onDidDispose(() => {
-      closedDocumentPaths.delete(this._fsPath);
-      // existing disposal code...
-    }, null, this._disposables);
     
     let textEditTimer: NodeJS.Timeout | void;
     
-    // Enhanced logging for document events
-    vscode.workspace.onDidCloseTextDocument((e) => {
-      console.log(`Document closed: ${e.fileName}, comparing with ${this._fsPath}`);
-      if (e.fileName === this._fsPath) {
-        console.log(`Will dispose panel for ${this._fsPath} due to document close`);
-        this.dispose();
-      }
+    // Track when files are saved
+    vscode.workspace.onDidSaveTextDocument((e) => {
+      console.log(`Document saved: ${e.fileName}`);
     }, this._disposables);
-    
-    // update EditorPanel when vsc editor changes
+
+    // Track when editors are opened/closed
+    vscode.window.onDidChangeVisibleTextEditors((editors) => {
+      console.log(`Visible editors changed. Current count: ${editors.length}`);
+      editors.forEach(editor => {
+        console.log(`  - Editor: ${editor.document.fileName}`);
+      });
+    }, this._disposables);
+
+    // Track active editor changes
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      console.log(`Active editor changed: ${editor?.document.fileName || 'none'}`);
+    }, this._disposables);
+
+    // Track when the webview becomes active/inactive
+    this._panel.onDidChangeViewState((e) => {
+      console.log(`Panel view state changed for ${this._uri.toString()}: active=${e.webviewPanel.active}, visible=${e.webviewPanel.visible}`);
+      
+      // Log the current state of all documents
+      console.log(`Current open documents:`);
+      vscode.workspace.textDocuments.forEach(doc => {
+        console.log(`  - ${doc.fileName} (isDirty=${doc.isDirty}, isClosed=${doc.isClosed})`);
+      });
+    }, this._disposables);
+
+    // Track document state changes
     vscode.workspace.onDidChangeTextDocument((e) => {
-      if (e.document.fileName !== this._document.fileName) {
-        return;
+      if (e.document.fileName === this._fsPath) {
+        console.log(`Document changed: ${e.document.fileName}, isDirty=${e.document.isDirty}`);
       }
-      // 当 webview panel 激活时不将由 webview编辑导致的 vsc 编辑器更新同步回 webview
-      // don't change webview panel when webview panel is focus
-      if (this._panel.active) {
-        return;
-      }
-      textEditTimer && clearTimeout(textEditTimer);
-      textEditTimer = setTimeout(() => {
-        this._update();
-        this._updateEditTitle();
-      }, 300);
     }, this._disposables);
     
     // Handle messages from the webview
@@ -501,17 +518,30 @@ class EditorPanel {
 
     // Clean up the timeout when the panel is disposed for other reasons
     this._panel.onDidDispose(() => {
+      closedDocumentPaths.delete(this._fsPath);
+
       if (disposalTimeout) {
         clearTimeout(disposalTimeout);
         disposalTimeout = null;
       }
       // Existing disposal code...
     }, null, this._disposables);
-    
-    // Log when panel becomes active/inactive
-    this._panel.onDidChangeViewState((e) => {
-      console.log(`Panel view state changed for ${this._uri.toString()}: active=${e.webviewPanel.active}, visible=${e.webviewPanel.visible}`);
-    }, null, this._disposables);
+
+
+    // Add to constructor
+    this._keepAliveInterval = setInterval(() => {
+      if (this._document) {
+        // Just accessing the document keeps it alive
+        console.log(`Keeping document alive: ${this._document.fileName}, isDirty=${this._document.isDirty}`);
+      } else {
+        // If document was closed, try to reopen it
+        vscode.workspace.openTextDocument(this._uri).then(doc => {
+          this._document = doc;
+          console.log(`Reopened document: ${doc.fileName}`);
+        });
+      }
+    }, 30000); // Every 30 seconds
+
   }
 
   static getAssetsFolder(uri: vscode.Uri) {
@@ -536,22 +566,51 @@ class EditorPanel {
   }
 
   
-  public dispose() {
-    console.log(`Disposing EditorPanel for ${this._uri.toString()}`);
+  // Keep track of whether this panel should be kept alive
+  private _keepAlive = true;
 
+  // Override the dispose method to check the keepAlive flag
+  public dispose() {
+    // If keepAlive is true and this is triggered by document close, prevent disposal
+    if (this._keepAlive && this._documentCloseTriggered) {
+      console.log(`Preventing disposal of panel for ${this._uri.toString()} due to keepAlive flag`);
+      this._documentCloseTriggered = false;
+      return;
+    }
+    // Check if already disposed to prevent multiple disposals
+    if (this._isDisposed) {
+      console.log(`Panel already disposed for ${this._uri.toString()}, skipping`);
+      return;
+    }
+    
+    this._isDisposed = true;
+    console.log(`Disposing EditorPanel for ${this._uri.toString()}`);
+    
     // Unregister from the map
     EditorPanelMap.unregister(this._uri);
-
+  
     // Clean up our resources
     this._panel.dispose();
-
+  
     while (this._disposables.length) {
       const x = this._disposables.pop();
       if (x) {
         x.dispose();
       }
     }
+
+    // In the dispose() method or wherever you're clearing the interval
+    if (this._keepAliveInterval) {
+      clearInterval(this._keepAliveInterval);
+      this._keepAliveInterval = null;
+    }
+
   }
+  
+  // Add this property to the class
+  private _documentCloseTriggered = false;
+  private _isDisposed = false;
+  
 
   private _init() {
     const webview = this._panel.webview;
