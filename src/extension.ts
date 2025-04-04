@@ -308,6 +308,7 @@ class EditorPanel {
     
     vscode.workspace.onDidCloseTextDocument((e) => {
       console.log(`Document closed: ${e.fileName}, comparing with ${this._fsPath}`);
+      console.log(`Close stack trace: ${new Error().stack}`);
       
       if (e.fileName === this._fsPath) {
         console.log(`Scheduling disposal for panel for ${this._fsPath} due to document close`);
