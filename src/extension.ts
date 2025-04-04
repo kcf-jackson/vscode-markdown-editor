@@ -79,7 +79,8 @@ class MarkdownEditorProvider implements vscode.CustomEditorProvider<vscode.Custo
       });
     } catch (error) {
       console.error(`Error resolving custom editor: ${error}`);
-      vscode.window.showErrorMessage(`Failed to open markdown editor: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Failed to open markdown editor: ${errorMessage}`);
       
       // Fall back to default editor
       webviewPanel.dispose();
@@ -319,6 +320,7 @@ class EditorPanel {
     // When document closes, track it but don't dispose immediately
     vscode.workspace.onDidCloseTextDocument((e) => {
       console.log(`Document closed: ${e.fileName}, comparing with ${this._fsPath}`);
+      console.log(`Close stack trace: ${new Error().stack}`);
       if (e.fileName === this._fsPath) {
         console.log(`Scheduling disposal for panel for ${this._fsPath} due to document close`);
         
@@ -334,13 +336,16 @@ class EditorPanel {
             doc => doc.fileName === this._fsPath
           );
           
-          if (!isDocumentOpen) {
+          // Check if the panel is still visible
+          const isPanelVisible = this._panel.visible;
+          
+          if (!isDocumentOpen && !isPanelVisible) {
             console.log(`Executing delayed disposal for ${this._fsPath} - document was not reopened`);
             this.dispose();
           } else {
-            console.log(`Cancelling disposal for ${this._fsPath} - document was reopened`);
+            console.log(`Cancelling disposal for ${this._fsPath} - document was reopened or panel is visible`);
           }
-        }, 1000); // 1 second delay
+        }, 10000); // Increase to 10 seconds
       }
     }, this._disposables);
 
@@ -362,14 +367,6 @@ class EditorPanel {
     
     let textEditTimer: NodeJS.Timeout | void;
     
-    // Enhanced logging for document events
-    vscode.workspace.onDidCloseTextDocument((e) => {
-      console.log(`Document closed: ${e.fileName}, comparing with ${this._fsPath}`);
-      if (e.fileName === this._fsPath) {
-        console.log(`Will dispose panel for ${this._fsPath} due to document close`);
-        this.dispose();
-      }
-    }, this._disposables);
     
     // update EditorPanel when vsc editor changes
     vscode.workspace.onDidChangeTextDocument((e) => {
