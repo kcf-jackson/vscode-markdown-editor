@@ -89,6 +89,13 @@
           "type": "boolean",
           "default": false,
           "description": "Use Markdown Editor as the default editor for markdown files."
+        },
+        "markdown-editor.disposalTimeoutSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Time in seconds to wait before disposing a panel after its document is closed"
         }
       }
     },
